@@ -1,0 +1,29 @@
+SESAME – Nutrient Economics Tool
+--------------------------------
+
+SETUP
+
+1. Install Python if you do not already have it:
+   https://www.python.org/downloads/
+
+   During installation make sure you check:
+   "Add Python to PATH"
+
+2. Unzip the folder you received.
+
+3. Open the folder and double-click:
+
+   start_sesame.bat
+
+The program will automatically install required Python packages the first time it runs.
+
+USING SESAME
+
+1. Click "Run Estimator (CSV…)"
+2. Select a feed library CSV file
+3. Results will be written to the "outputs" folder.
+
+NOTES
+
+Protein-only presets are intended for moderate to high protein feeds.
+Low protein feeds should generally not be included in those analyses.
