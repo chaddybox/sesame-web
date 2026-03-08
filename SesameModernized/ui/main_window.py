@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
             self,
             "About Sesame — Modernized",
             "Sesame — Modernized\n"
+            "Version 1.2\n"
             "Nutrient Economics for Dairy Nutritionists\n\n"
             "This software is a modern Python implementation inspired by the SESAME "
             "method described in:\n\n"
