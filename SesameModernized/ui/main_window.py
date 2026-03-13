@@ -79,6 +79,10 @@ class MainWindow(QMainWindow):
                 "5) Protein value, detailed — protein feeds only (dRUP_prot, dLys_RUP, dMet_RUP, dHis_RUP)",
                 ["dRUP_prot", "dLys_RUP", "dMet_RUP", "dHis_RUP"],
             ),
+            (
+                "6) NASEM milk protein contribution (NASEM_MP_6_6_perkgDM, DE, NDFd)",
+                ["NASEM_MP_6_6_perkgDM", "DE", "NDFd"],
+            ),
         ]
 
         for title, _cols in self._presets:

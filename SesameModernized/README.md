@@ -16,6 +16,7 @@ The software estimates the implicit economic value ("shadow price") of nutrients
 • Modern graphical interface built with **Python** and **PySide6**
 • Multiple preset nutrient systems for feed evaluation
 • Automatic calculation of derived nutrient variables
+• NASEM Eq. 6-6 inspired per-kg-DM milk protein contribution proxy preset
 • Estimation of nutrient shadow prices
 • Feed value comparison (Predicted vs Actual price)
 • Opportunity plots to identify undervalued feed ingredients
