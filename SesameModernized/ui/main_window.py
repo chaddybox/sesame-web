@@ -80,7 +80,7 @@ class MainWindow(QMainWindow):
                 ["dRUP_prot", "dLys_RUP", "dMet_RUP", "dHis_RUP"],
             ),
             (
-                "6) NASEM milk protein contribution (NASEM_MP_6_6_perkgDM, DE, NDFd)",
+                "6) NASEM equation 6-6, milk protein yield (NASEM_MP_6_6_perkgDM, DE, NDFd)",
                 ["NASEM_MP_6_6_perkgDM", "DE", "NDFd"],
             ),
         ]
