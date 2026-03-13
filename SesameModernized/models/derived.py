@@ -125,6 +125,51 @@ def add_feed_level_proxies(rec: Dict[str, Any]) -> Dict[str, Any]:
     if rec.get("dRUP_prot") is not None and rec.get("Oleic_DM") is not None:
         rec["dRUP_plus_Oleic"] = rec["dRUP_prot"] + rec["Oleic_DM"]
 
+    # NASEM 2021 Eq. 6-6 milk protein contribution proxy (per kg DM basis)
+    # Uses digestible AA in RUP, DE, and digestible NDF; BW fixed at 700 kg.
+    # Units mapping to Eq. 6-6 inputs:
+    #   - dAA_RUP variables are in %DM, converted to g/kg DM by multiplying by 10
+    #   - DE is used as provided by feed library (commonly Mcal/kg DM)
+    #   - dNDF is proxied as NDFd = NDF * NDFD48/100 (%DM)
+    #   - BW constant is 700 kg
+    de = rec.get("DE")
+    ndfd = rec.get("NDFd")
+    drup_prot = rec.get("dRUP_prot")
+    his = rec.get("dHis_RUP")
+    ile = rec.get("dIle_RUP")
+    leu = rec.get("dLeu_RUP")
+    lys = rec.get("dLys_RUP")
+    met = rec.get("dMet_RUP")
+
+    if all(v is not None for v in (de, ndfd, drup_prot, his, ile, leu, lys, met)):
+        # Convert digestible AA and digestible RUP protein from %DM to g/kg DM
+        his_gkg = his * 10.0
+        ile_gkg = ile * 10.0
+        leu_gkg = leu * 10.0
+        lys_gkg = lys * 10.0
+        met_gkg = met * 10.0
+        drup_prot_gkg = drup_prot * 10.0
+
+        # OthAA = NEAA + Arg + Phe + Thr + Trp + Val; approximated here as
+        # digestible RUP protein minus the 5 EAA explicitly included in Eq. 6-6.
+        othaa_gkg = drup_prot_gkg - (his_gkg + ile_gkg + leu_gkg + lys_gkg + met_gkg)
+
+        rec["NASEM_MP_6_6_perkgDM"] = (
+            -97.0
+            + 1.68 * his_gkg
+            + 0.885 * ile_gkg
+            + 0.466 * leu_gkg
+            + 1.15 * lys_gkg
+            + 1.84 * met_gkg
+            + 0.077 * othaa_gkg
+            - 0.00215 * (
+                his_gkg ** 2 + ile_gkg ** 2 + leu_gkg ** 2 + lys_gkg ** 2 + met_gkg ** 2
+            )
+            + 10.8 * de
+            - 4.60 * (ndfd - 17.06)
+            - 0.420 * (700.0 - 612.0)
+        )
+
     return rec
 
 
