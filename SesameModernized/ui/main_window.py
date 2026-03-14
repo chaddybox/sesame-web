@@ -66,27 +66,27 @@ class MainWindow(QMainWindow):
         # Revised preset nutrient systems
         self._presets = [
             (
-                "1) Basic Energy and Protein (DE, CP)",
+                "Basic Energy + Protein (DE, CP)",
                 ["DE", "CP"],
             ),
             (
-                "2) Energy, MP and Fiber (DE, MP, NDF)",
+                "Energy + MP + Fiber (DE, MP, NDF)",
                 ["DE", "MP", "NDF"],
             ),
             (
-                "3) Energy, degradable and digestible protein with fiber (DE, RDP_prot, dRUP_prot, NDF)",
+                "Energy + RDP + dRUP + Fiber (DE, RDP_prot, dRUP_prot, NDF)",
                 ["DE", "RDP_prot", "dRUP_prot", "NDF"],
             ),
             (
-                "4) Protein value, compact — protein feeds only (dRUP_prot, dMetLysHis_RUP_sum)",
+                "Protein Value — Compact (dRUP_prot, dMetLysHis_RUP_sum)",
                 ["dRUP_prot", "dMetLysHis_RUP_sum"],
             ),
             (
-                "5) Protein value, detailed — protein feeds only (dRUP_prot, dLys_RUP, dMet_RUP, dHis_RUP)",
+                "Protein Value — Detailed (dRUP_prot, dLys_RUP, dMet_RUP, dHis_RUP)",
                 ["dRUP_prot", "dLys_RUP", "dMet_RUP", "dHis_RUP"],
             ),
             (
-                "6) NASEM equation 6-6, milk protein yield (NASEM_MP_6_6_perkgDM, DE, NDFd)",
+                "NASEM Eq. 6-6 Milk Protein Yield (NASEM_MP_6_6_perkgDM, DE, NDFd)",
                 ["NASEM_MP_6_6_perkgDM", "DE", "NDFd"],
             ),
         ]
@@ -215,10 +215,23 @@ class MainWindow(QMainWindow):
         self._last_dir = str(Path(csv_path).parent)
 
         idx = self.preset_box.currentIndex()
-        _, cols = self._presets[idx]
+        preset_label, cols = self._presets[idx]
 
         # Warning for protein-only presets
         self._warn_if_protein_only_preset(idx)
+
+        try:
+            precheck = self._estimator.summarize_input_rows(csv_path, cols)
+        except Exception as e:
+            tb = traceback.format_exc(limit=8)
+            QMessageBox.critical(self, "Input Check Error", f"{e}\n\n{tb}")
+            return
+
+        precheck_msg = (
+            f"{precheck['usable']} feeds usable for this preset.\n"
+            f"{precheck['skipped_missing_required_inputs']} feeds will be skipped due to missing required inputs."
+        )
+        QMessageBox.information(self, "Pre-Run Input Check", precheck_msg)
 
         try:
             screening = ScreeningConfig(
@@ -232,31 +245,54 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            out_summary, out_breakeven, out_shadow = self._write_outputs(csv_path, result.final_fit)
-            out_initial, out_final, out_excluded, out_diag = self._write_diagnostic_outputs(csv_path, result)
-            out_pre_screen = self._write_pre_screen_removed_feeds_output(result)
-            out_bar = self._write_bar_chart(csv_path, result.final_fit)
-            out_scatter = self._write_opportunity_plot(csv_path, result.final_fit)
+            out_summary, _, _ = self._write_outputs(csv_path, result.final_fit)
+            self._write_diagnostic_outputs(csv_path, result)
+            self._write_pre_screen_removed_feeds_output(result)
+            self._write_bar_chart(csv_path, result.final_fit)
+            self._write_opportunity_plot(csv_path, result.final_fit)
 
-            msg = (
-                "Saved:\n"
-                f"• {out_summary}\n"
-                f"• {out_breakeven}\n"
-                f"• {out_shadow}\n"
-                f"• {out_initial}\n"
-                f"• {out_final}\n"
-                f"• {out_excluded}\n"
-                f"• {out_diag}\n"
-                f"• {out_pre_screen}\n"
-                f"• {out_bar}\n"
-                f"• {out_scatter}"
+            output_dir = Path(out_summary).parent
+            msg = self._build_run_summary(
+                preset_label=preset_label,
+                result=result,
+                output_dir=output_dir,
             )
-            msg += "\n\n" + self._build_screening_summary(result)
-            QMessageBox.information(self, "Done", msg)
+            QMessageBox.information(self, "Run Complete", msg)
 
         except Exception as e:
             tb = traceback.format_exc(limit=12)
             QMessageBox.critical(self, "Write Error", f"Failed to write outputs:\n{e}\n\n{tb}")
+
+    def _write_csv_rows(self, path: Path, fieldnames: List[str], rows: List[Dict[str, object]]):
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in rows:
+                w.writerow(row)
+
+    def _fit_rows_for_csv(self, fit: FitResult) -> List[Dict[str, object]]:
+        out: List[Dict[str, object]] = []
+        for row in fit.rows:
+            d = _row_as_dict(row)
+            actual = d.get("actual_per_t")
+            pred = d.get("predicted_per_t")
+            student_residual = d.get("student_residual")
+            out.append(
+                {
+                    "name": d.get("name", ""),
+                    "actual_per_t": actual,
+                    "predicted_per_t": pred,
+                    "predicted_minus_actual": (pred - actual) if (pred is not None and actual is not None) else None,
+                    "residual": d.get("residual"),
+                    "leverage": d.get("leverage"),
+                    "student_residual": student_residual,
+                    "abs_student_residual": abs(student_residual) if student_residual is not None else None,
+                    "excluded": False,
+                    "ci75_lo": d.get("ci75_lo"),
+                    "ci75_hi": d.get("ci75_hi"),
+                }
+            )
+        return out
 
     def _write_outputs(self, input_csv: str, fit: FitResult):
         inp = Path(input_csv)
@@ -268,78 +304,30 @@ class MainWindow(QMainWindow):
         breakeven_path = out_dir / f"{base}.breakeven.csv"
         shadow_path = out_dir / f"{base}.shadow_prices.csv"
 
-        with open(summary_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = [
-                "name",
-                "actual_per_t",
-                "predicted_per_t",
-                "predicted_minus_actual",
-                "residual",
-                "leverage",
-                "student_residual",
-                "ci75_lo",
-                "ci75_hi",
-            ]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
+        self._write_summary_file(summary_path, fit)
 
-            for row in fit.rows:
-                d = _row_as_dict(row)
-                actual = d.get("actual_per_t")
-                pred = d.get("predicted_per_t")
-                pma = (pred - actual) if (pred is not None and actual is not None) else None
+        vif: Dict[str, float] = fit.vif or {}
+        breakeven_rows: List[Dict[str, object]] = []
+        shadow_rows: List[Dict[str, object]] = []
+        for i, n in enumerate(fit.nutrients):
+            coef = fit.coef[i] if i < len(fit.coef) else ""
+            se = fit.se_coef[i] if i < len(fit.se_coef) else ""
+            breakeven_rows.append({"nutrient": n, "coef": coef, "se": se, "vif": vif.get(n, "")})
+            shadow_rows.append(
+                {
+                    "nutrient": n,
+                    "shadow_price": coef,
+                    "se": se,
+                    "vif": vif.get(n, ""),
+                    "notes": "$/ton per unit of nutrient column",
+                }
+            )
 
-                w.writerow(
-                    {
-                        "name": d.get("name", ""),
-                        "actual_per_t": actual,
-                        "predicted_per_t": pred,
-                        "predicted_minus_actual": pma,
-                        "residual": d.get("residual"),
-                        "leverage": d.get("leverage"),
-                        "student_residual": d.get("student_residual"),
-                        "ci75_lo": d.get("ci75_lo"),
-                        "ci75_hi": d.get("ci75_hi"),
-                    }
-                )
+        breakeven_rows.extend([{}, {"nutrient": "adj_r2", "coef": fit.adj_r2}, {"nutrient": "sigma2", "coef": fit.sigma2}])
+        shadow_rows.extend([{}, {"nutrient": "adj_r2", "shadow_price": fit.adj_r2}, {"nutrient": "sigma2", "shadow_price": fit.sigma2}])
 
-        with open(breakeven_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = ["nutrient", "coef", "se", "vif"]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-
-            vif: Dict[str, float] = fit.vif or {}
-            for i, n in enumerate(fit.nutrients):
-                coef = fit.coef[i] if i < len(fit.coef) else ""
-                se = fit.se_coef[i] if i < len(fit.se_coef) else ""
-                w.writerow({"nutrient": n, "coef": coef, "se": se, "vif": vif.get(n, "")})
-
-            w.writerow({})
-            w.writerow({"nutrient": "adj_r2", "coef": fit.adj_r2})
-            w.writerow({"nutrient": "sigma2", "coef": fit.sigma2})
-
-        with open(shadow_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = ["nutrient", "shadow_price", "se", "vif", "notes"]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-
-            vif: Dict[str, float] = fit.vif or {}
-            for i, n in enumerate(fit.nutrients):
-                coef = fit.coef[i] if i < len(fit.coef) else ""
-                se = fit.se_coef[i] if i < len(fit.se_coef) else ""
-                w.writerow(
-                    {
-                        "nutrient": n,
-                        "shadow_price": coef,
-                        "se": se,
-                        "vif": vif.get(n, ""),
-                        "notes": "$/ton per unit of nutrient column",
-                    }
-                )
-
-            w.writerow({})
-            w.writerow({"nutrient": "adj_r2", "shadow_price": fit.adj_r2})
-            w.writerow({"nutrient": "sigma2", "shadow_price": fit.sigma2})
+        self._write_csv_rows(breakeven_path, ["nutrient", "coef", "se", "vif"], breakeven_rows)
+        self._write_csv_rows(shadow_path, ["nutrient", "shadow_price", "se", "vif", "notes"], shadow_rows)
 
         return str(summary_path), str(breakeven_path), str(shadow_path)
 
@@ -356,127 +344,94 @@ class MainWindow(QMainWindow):
         self._write_summary_file(initial_path, result.initial_fit)
         self._write_summary_file(final_path, result.final_fit)
 
-        with open(excluded_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = ["name", "reason", "leverage", "student_residual"]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            for r in result.excluded_feeds:
-                w.writerow(asdict(r))
+        excluded_rows = [asdict(r) for r in result.excluded_feeds]
+        self._write_csv_rows(excluded_path, ["name", "reason", "leverage", "student_residual"], excluded_rows)
 
-        with open(report_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = [
+        report_rows: List[Dict[str, object]] = []
+        excluded_map = {x.name: x.reason for x in result.excluded_feeds}
+        for row in result.diagnostic_rows:
+            name = str(row.get("name", ""))
+            out = {
+                "name": name,
+                "leverage": row.get("leverage"),
+                "student_residual": row.get("student_residual"),
+                "abs_student_residual": row.get("abs_student_residual"),
+                "excluded": name in excluded_map,
+                "exclusion_reason": excluded_map.get(name, ""),
+            }
+            report_rows.append(out)
+
+        report_rows.extend(
+            [
+                {},
+                {"name": "intercept_included_final", "leverage": result.final_fit.intercept_included},
+                {"name": "intercept_pvalue_final", "leverage": result.final_fit.intercept_pvalue},
+            ]
+        )
+
+        for nutrient, vif in (result.final_fit.vif or {}).items():
+            concern = "ok"
+            if vif > result.config.vif_unacceptable_threshold:
+                concern = "unacceptable"
+            elif vif > result.config.vif_concerning_threshold:
+                concern = "concerning"
+            report_rows.append({"name": f"vif:{nutrient}", "leverage": vif, "exclusion_reason": concern})
+
+        self._write_csv_rows(
+            report_path,
+            [
                 "name",
                 "leverage",
                 "student_residual",
                 "abs_student_residual",
-                "is_high_leverage",
-                "is_very_high_leverage",
-                "is_extreme_studentized",
                 "excluded",
                 "exclusion_reason",
-            ]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-
-            excluded_map = {x.name: x.reason for x in result.excluded_feeds}
-            for row in result.diagnostic_rows:
-                name = str(row.get("name", ""))
-                out = dict(row)
-                out["excluded"] = name in excluded_map
-                out["exclusion_reason"] = excluded_map.get(name, "")
-                w.writerow(out)
-
-            w.writerow({})
-            w.writerow({"name": "intercept_included_final", "leverage": result.final_fit.intercept_included})
-            w.writerow({"name": "intercept_pvalue_final", "leverage": result.final_fit.intercept_pvalue})
-
-            for nutrient, vif in (result.final_fit.vif or {}).items():
-                concern = "ok"
-                if vif > result.config.vif_unacceptable_threshold:
-                    concern = "unacceptable"
-                elif vif > result.config.vif_concerning_threshold:
-                    concern = "concerning"
-                w.writerow({"name": f"vif:{nutrient}", "leverage": vif, "exclusion_reason": concern})
+            ],
+            report_rows,
+        )
 
         return str(initial_path), str(final_path), str(excluded_path), str(report_path)
 
     def _write_summary_file(self, path: Path, fit: FitResult):
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = [
-                "name",
-                "actual_per_t",
-                "predicted_per_t",
-                "predicted_minus_actual",
-                "residual",
-                "leverage",
-                "student_residual",
-                "ci75_lo",
-                "ci75_hi",
-            ]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-
-            for row in fit.rows:
-                d = _row_as_dict(row)
-                actual = d.get("actual_per_t")
-                pred = d.get("predicted_per_t")
-                pma = (pred - actual) if (pred is not None and actual is not None) else None
-                w.writerow(
-                    {
-                        "name": d.get("name", ""),
-                        "actual_per_t": actual,
-                        "predicted_per_t": pred,
-                        "predicted_minus_actual": pma,
-                        "residual": d.get("residual"),
-                        "leverage": d.get("leverage"),
-                        "student_residual": d.get("student_residual"),
-                        "ci75_lo": d.get("ci75_lo"),
-                        "ci75_hi": d.get("ci75_hi"),
-                    }
-                )
-
+        fieldnames = [
+            "name",
+            "actual_per_t",
+            "predicted_per_t",
+            "predicted_minus_actual",
+            "residual",
+            "leverage",
+            "student_residual",
+            "abs_student_residual",
+            "excluded",
+            "ci75_lo",
+            "ci75_hi",
+        ]
+        self._write_csv_rows(path, fieldnames, self._fit_rows_for_csv(fit))
 
     def _write_pre_screen_removed_feeds_output(self, result: ScreeningResult) -> str:
         out_dir = self._project_root / "outputs"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "pre_screen_removed_feeds.csv"
 
-        with open(out_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = ["feed_name", "reason"]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            for row in result.pre_screen_removed_feeds:
-                w.writerow({
-                    "feed_name": row.get("feed_name", ""),
-                    "reason": row.get("reason", ""),
-                })
+        rows = [
+            {
+                "name": row.get("feed_name", ""),
+                "reason": row.get("reason", ""),
+            }
+            for row in result.pre_screen_removed_feeds
+        ]
+        self._write_csv_rows(out_path, ["name", "reason"], rows)
 
         return str(out_path)
 
-    def _build_screening_summary(self, result: ScreeningResult) -> str:
-        reason_counts: Dict[str, int] = {}
-        for r in result.excluded_feeds:
-            for reason in r.reason.split(";"):
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
-
-        vif_concerns: List[str] = []
-        for nutrient, vif in (result.final_fit.vif or {}).items():
-            if vif > result.config.vif_unacceptable_threshold:
-                vif_concerns.append(f"{nutrient}: unacceptable ({vif:.2f})")
-            elif vif > result.config.vif_concerning_threshold:
-                vif_concerns.append(f"{nutrient}: concerning ({vif:.2f})")
-
-        reason_txt = ", ".join(f"{k}={v}" for k, v in sorted(reason_counts.items())) or "none"
-        vif_txt = "; ".join(vif_concerns) if vif_concerns else "none"
-        intercept_txt = "retained" if result.final_fit.intercept_included else "removed"
-
+    def _build_run_summary(self, preset_label: str, result: ScreeningResult, output_dir: Path) -> str:
         return (
-            "Diagnostic screening summary:\n"
-            f"• Pre-screen removed feeds: {len(result.pre_screen_removed_feeds)}\n"
-            f"• Feeds excluded: {len(result.excluded_feeds)}\n"
-            f"• Exclusion reasons: {reason_txt}\n"
-            f"• Intercept: {intercept_txt}\n"
-            f"• VIF concerns: {vif_txt}"
+            "Run summary:\n"
+            f"• Preset: {preset_label}\n"
+            f"• Feeds used in regression: {len(result.final_fit.rows)}\n"
+            f"• Removed before regression (missing required inputs): {len(result.pre_screen_removed_feeds)}\n"
+            f"• Excluded by diagnostic screening: {len(result.excluded_feeds)}\n"
+            f"• Output files: {output_dir}"
         )
 
     def _write_bar_chart(self, input_csv: str, fit: FitResult) -> str:

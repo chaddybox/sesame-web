@@ -132,56 +132,9 @@ class SesameEstimator:
         if not p.exists():
             raise FileNotFoundError(f"CSV not found: {p}")
 
-        data: List[Dict[str, float]] = []
-
-        with open(path, newline="", encoding="utf-8") as f:
-            rdr = csv.DictReader(f)
-            if not rdr.fieldnames:
-                raise ValueError("CSV has no header row.")
-
-            header_map = {h: canon_header(h) for h in rdr.fieldnames}
-
-            for row in rdr:
-                rec: Dict[str, float] = {}
-                for h, v in row.items():
-                    cname = header_map.get(h, h)
-                    rec[cname] = v
-
-                if "name" not in rec:
-                    for alt in ("feed", "ingredient", "description", "feedname"):
-                        if alt in rec:
-                            rec["name"] = rec.get(alt)
-                            break
-                if "price_per_t" not in rec:
-                    for alt in ("price", "price/ton", "price_per_ton", "price_usd_t", "priceton"):
-                        if alt in rec:
-                            rec["price_per_t"] = rec.get(alt)
-                            break
-
-                for k in list(rec.keys()):
-                    if k != "name":
-                        rec[k] = to_float_safe(rec[k])
-
-                rec = add_derived(rec)
-                data.append(rec)
-
-        clean: List[Dict[str, float]] = []
-        pre_screen_removed_feeds: List[Dict[str, str]] = []
+        data = self._load_input_rows(path)
+        clean, pre_screen_removed_feeds = self._split_usable_rows(data, nutrient_cols)
         required = ["price_per_t"] + list(nutrient_cols)
-        for row in data:
-            has_required = all(row.get(c) is not None for c in required)
-            has_name = row.get("name") not in (None, "")
-
-            if has_name and has_required:
-                clean.append(row)
-                continue
-
-            missing_predictors = [col for col in nutrient_cols if row.get(col) is None]
-            if missing_predictors:
-                feed_name = str(row.get("name") or "")
-                reason = f"missing_predictor_values:{';'.join(missing_predictors)}"
-                pre_screen_removed_feeds.append({"feed_name": feed_name, "reason": reason})
-                self._logger.info("Pre-screen removed feed '%s' (%s)", feed_name, reason)
 
         if not clean:
             raise ValueError(
@@ -209,6 +162,70 @@ class SesameEstimator:
             include_intercept,
             pre_screen_removed_feeds=pre_screen_removed_feeds,
         )
+
+    def summarize_input_rows(self, path: str, nutrient_cols: List[str]) -> Dict[str, int]:
+        """Return simple pre-run usability counts for the chosen preset nutrients."""
+        data = self._load_input_rows(path)
+        clean, removed = self._split_usable_rows(data, nutrient_cols)
+        return {
+            "usable": len(clean),
+            "skipped_missing_required_inputs": len(removed),
+        }
+
+    def _load_input_rows(self, path: str) -> List[Dict[str, float]]:
+        data: List[Dict[str, float]] = []
+        with open(path, newline="", encoding="utf-8") as f:
+            rdr = csv.DictReader(f)
+            if not rdr.fieldnames:
+                raise ValueError("CSV has no header row.")
+
+            header_map = {h: canon_header(h) for h in rdr.fieldnames}
+            for row in rdr:
+                rec: Dict[str, float] = {}
+                for h, v in row.items():
+                    cname = header_map.get(h, h)
+                    rec[cname] = v
+
+                if "name" not in rec:
+                    for alt in ("feed", "ingredient", "description", "feedname"):
+                        if alt in rec:
+                            rec["name"] = rec.get(alt)
+                            break
+                if "price_per_t" not in rec:
+                    for alt in ("price", "price/ton", "price_per_ton", "price_usd_t", "priceton"):
+                        if alt in rec:
+                            rec["price_per_t"] = rec.get(alt)
+                            break
+
+                for k in list(rec.keys()):
+                    if k != "name":
+                        rec[k] = to_float_safe(rec[k])
+
+                data.append(add_derived(rec))
+        return data
+
+    def _split_usable_rows(
+        self, rows: List[Dict[str, float]], nutrient_cols: List[str]
+    ) -> tuple[List[Dict[str, float]], List[Dict[str, str]]]:
+        clean: List[Dict[str, float]] = []
+        pre_screen_removed_feeds: List[Dict[str, str]] = []
+        required = ["price_per_t"] + list(nutrient_cols)
+        for row in rows:
+            has_required = all(row.get(c) is not None for c in required)
+            has_name = row.get("name") not in (None, "")
+
+            if has_name and has_required:
+                clean.append(row)
+                continue
+
+            missing_predictors = [col for col in nutrient_cols if row.get(col) is None]
+            if missing_predictors:
+                feed_name = str(row.get("name") or "")
+                reason = f"missing_predictor_values:{';'.join(missing_predictors)}"
+                pre_screen_removed_feeds.append({"feed_name": feed_name, "reason": reason})
+                self._logger.info("Pre-screen removed feed '%s' (%s)", feed_name, reason)
+
+        return clean, pre_screen_removed_feeds
 
     def _run_iterative_screening(
         self,
