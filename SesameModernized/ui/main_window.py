@@ -4,7 +4,7 @@ import csv
 import traceback
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon, QPixmap
@@ -18,9 +18,15 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
 )
 
-from models.estimator import SesameEstimator, FitResult
+from models.estimator import (
+    SesameEstimator,
+    FitResult,
+    ScreeningConfig,
+    ScreeningResult,
+)
 
 
 def _row_as_dict(r):
@@ -119,6 +125,11 @@ class MainWindow(QMainWindow):
         self.run_button.clicked.connect(self.on_run_clicked)
         self.run_button.setFixedHeight(36)
 
+        self.iterative_screening_checkbox = QCheckBox("Iterative diagnostic screening")
+        self.iterative_screening_checkbox.setToolTip(
+            "Run an initial fit, screen the calibration set using leverage/residual diagnostics, then refit."
+        )
+
         v = QVBoxLayout()
         v.addLayout(preset_row)
         v.addSpacing(16)
@@ -127,6 +138,8 @@ class MainWindow(QMainWindow):
         v.addWidget(self.hint)
         v.addSpacing(16)
         v.addWidget(self.run_button, alignment=Qt.AlignCenter)
+        v.addSpacing(8)
+        v.addWidget(self.iterative_screening_checkbox, alignment=Qt.AlignCenter)
 
         c = QWidget()
         c.setLayout(v)
@@ -208,25 +221,35 @@ class MainWindow(QMainWindow):
         self._warn_if_protein_only_preset(idx)
 
         try:
-            fit = self._estimator.run_on_csv(csv_path, cols)
+            screening = ScreeningConfig(
+                enable_iterative_screening=self.iterative_screening_checkbox.isChecked(),
+                exclude_extreme_studentized=False,
+            )
+            result = self._estimator.run_on_csv(csv_path, cols, screening=screening)
         except Exception as e:
             tb = traceback.format_exc(limit=8)
             QMessageBox.critical(self, "Estimator Error", f"{e}\n\n{tb}")
             return
 
         try:
-            out_summary, out_breakeven, out_shadow = self._write_outputs(csv_path, fit)
-            out_bar = self._write_bar_chart(csv_path, fit)
-            out_scatter = self._write_opportunity_plot(csv_path, fit)
+            out_summary, out_breakeven, out_shadow = self._write_outputs(csv_path, result.final_fit)
+            out_initial, out_final, out_excluded, out_diag = self._write_diagnostic_outputs(csv_path, result)
+            out_bar = self._write_bar_chart(csv_path, result.final_fit)
+            out_scatter = self._write_opportunity_plot(csv_path, result.final_fit)
 
             msg = (
                 "Saved:\n"
                 f"• {out_summary}\n"
                 f"• {out_breakeven}\n"
                 f"• {out_shadow}\n"
+                f"• {out_initial}\n"
+                f"• {out_final}\n"
+                f"• {out_excluded}\n"
+                f"• {out_diag}\n"
                 f"• {out_bar}\n"
                 f"• {out_scatter}"
             )
+            msg += "\n\n" + self._build_screening_summary(result)
             QMessageBox.information(self, "Done", msg)
 
         except Exception as e:
@@ -317,6 +340,123 @@ class MainWindow(QMainWindow):
             w.writerow({"nutrient": "sigma2", "shadow_price": fit.sigma2})
 
         return str(summary_path), str(breakeven_path), str(shadow_path)
+
+    def _write_diagnostic_outputs(self, input_csv: str, result: ScreeningResult):
+        inp = Path(input_csv)
+        out_dir = self._project_root / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        initial_path = out_dir / "initial_fit.summary.csv"
+        final_path = out_dir / "final_fit.summary.csv"
+        excluded_path = out_dir / "excluded_feeds.csv"
+        report_path = out_dir / "diagnostic_report.csv"
+
+        self._write_summary_file(initial_path, result.initial_fit)
+        self._write_summary_file(final_path, result.final_fit)
+
+        with open(excluded_path, "w", newline="", encoding="utf-8") as f:
+            fieldnames = ["name", "reason", "leverage", "student_residual"]
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for r in result.excluded_feeds:
+                w.writerow(asdict(r))
+
+        with open(report_path, "w", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "name",
+                "leverage",
+                "student_residual",
+                "abs_student_residual",
+                "is_high_leverage",
+                "is_very_high_leverage",
+                "is_extreme_studentized",
+                "excluded",
+                "exclusion_reason",
+            ]
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+
+            excluded_map = {x.name: x.reason for x in result.excluded_feeds}
+            for row in result.diagnostic_rows:
+                name = str(row.get("name", ""))
+                out = dict(row)
+                out["excluded"] = name in excluded_map
+                out["exclusion_reason"] = excluded_map.get(name, "")
+                w.writerow(out)
+
+            w.writerow({})
+            w.writerow({"name": "intercept_included_final", "leverage": result.final_fit.intercept_included})
+            w.writerow({"name": "intercept_pvalue_final", "leverage": result.final_fit.intercept_pvalue})
+
+            for nutrient, vif in (result.final_fit.vif or {}).items():
+                concern = "ok"
+                if vif > result.config.vif_unacceptable_threshold:
+                    concern = "unacceptable"
+                elif vif > result.config.vif_concerning_threshold:
+                    concern = "concerning"
+                w.writerow({"name": f"vif:{nutrient}", "leverage": vif, "exclusion_reason": concern})
+
+        return str(initial_path), str(final_path), str(excluded_path), str(report_path)
+
+    def _write_summary_file(self, path: Path, fit: FitResult):
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "name",
+                "actual_per_t",
+                "predicted_per_t",
+                "predicted_minus_actual",
+                "residual",
+                "leverage",
+                "student_residual",
+                "ci75_lo",
+                "ci75_hi",
+            ]
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+
+            for row in fit.rows:
+                d = _row_as_dict(row)
+                actual = d.get("actual_per_t")
+                pred = d.get("predicted_per_t")
+                pma = (pred - actual) if (pred is not None and actual is not None) else None
+                w.writerow(
+                    {
+                        "name": d.get("name", ""),
+                        "actual_per_t": actual,
+                        "predicted_per_t": pred,
+                        "predicted_minus_actual": pma,
+                        "residual": d.get("residual"),
+                        "leverage": d.get("leverage"),
+                        "student_residual": d.get("student_residual"),
+                        "ci75_lo": d.get("ci75_lo"),
+                        "ci75_hi": d.get("ci75_hi"),
+                    }
+                )
+
+    def _build_screening_summary(self, result: ScreeningResult) -> str:
+        reason_counts: Dict[str, int] = {}
+        for r in result.excluded_feeds:
+            for reason in r.reason.split(";"):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+        vif_concerns: List[str] = []
+        for nutrient, vif in (result.final_fit.vif or {}).items():
+            if vif > result.config.vif_unacceptable_threshold:
+                vif_concerns.append(f"{nutrient}: unacceptable ({vif:.2f})")
+            elif vif > result.config.vif_concerning_threshold:
+                vif_concerns.append(f"{nutrient}: concerning ({vif:.2f})")
+
+        reason_txt = ", ".join(f"{k}={v}" for k, v in sorted(reason_counts.items())) or "none"
+        vif_txt = "; ".join(vif_concerns) if vif_concerns else "none"
+        intercept_txt = "retained" if result.final_fit.intercept_included else "removed"
+
+        return (
+            "Diagnostic screening summary:\n"
+            f"• Feeds excluded: {len(result.excluded_feeds)}\n"
+            f"• Exclusion reasons: {reason_txt}\n"
+            f"• Intercept: {intercept_txt}\n"
+            f"• VIF concerns: {vif_txt}"
+        )
 
     def _write_bar_chart(self, input_csv: str, fit: FitResult) -> str:
         try:
