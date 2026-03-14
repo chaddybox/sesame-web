@@ -234,6 +234,7 @@ class MainWindow(QMainWindow):
         try:
             out_summary, out_breakeven, out_shadow = self._write_outputs(csv_path, result.final_fit)
             out_initial, out_final, out_excluded, out_diag = self._write_diagnostic_outputs(csv_path, result)
+            out_pre_screen = self._write_pre_screen_removed_feeds_output(result)
             out_bar = self._write_bar_chart(csv_path, result.final_fit)
             out_scatter = self._write_opportunity_plot(csv_path, result.final_fit)
 
@@ -246,6 +247,7 @@ class MainWindow(QMainWindow):
                 f"• {out_final}\n"
                 f"• {out_excluded}\n"
                 f"• {out_diag}\n"
+                f"• {out_pre_screen}\n"
                 f"• {out_bar}\n"
                 f"• {out_scatter}"
             )
@@ -433,6 +435,24 @@ class MainWindow(QMainWindow):
                     }
                 )
 
+
+    def _write_pre_screen_removed_feeds_output(self, result: ScreeningResult) -> str:
+        out_dir = self._project_root / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "pre_screen_removed_feeds.csv"
+
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            fieldnames = ["feed_name", "reason"]
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in result.pre_screen_removed_feeds:
+                w.writerow({
+                    "feed_name": row.get("feed_name", ""),
+                    "reason": row.get("reason", ""),
+                })
+
+        return str(out_path)
+
     def _build_screening_summary(self, result: ScreeningResult) -> str:
         reason_counts: Dict[str, int] = {}
         for r in result.excluded_feeds:
@@ -452,6 +472,7 @@ class MainWindow(QMainWindow):
 
         return (
             "Diagnostic screening summary:\n"
+            f"• Pre-screen removed feeds: {len(result.pre_screen_removed_feeds)}\n"
             f"• Feeds excluded: {len(result.excluded_feeds)}\n"
             f"• Exclusion reasons: {reason_txt}\n"
             f"• Intercept: {intercept_txt}\n"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,6 +102,7 @@ class ScreeningResult:
     initial_fit: FitResult
     final_fit: FitResult
     excluded_feeds: List[ExclusionRecord]
+    pre_screen_removed_feeds: List[Dict[str, str]]
     diagnostic_rows: List[Dict[str, object]]
     config: ScreeningConfig
 
@@ -111,6 +113,8 @@ class ScreeningResult:
 class SesameEstimator:
     """Multiple linear regression Price = b0 + sum_j b_j * Nutrient_j.
     This implementation matches the data produced/consumed by the UI."""
+
+    _logger = logging.getLogger(__name__)
 
     # ------------- public API -------------
     def run_on_csv(
@@ -161,12 +165,24 @@ class SesameEstimator:
                 rec = add_derived(rec)
                 data.append(rec)
 
+        clean: List[Dict[str, float]] = []
+        pre_screen_removed_feeds: List[Dict[str, str]] = []
         required = ["price_per_t"] + list(nutrient_cols)
-        clean: List[Dict[str, float]] = [
-            r
-            for r in data
-            if r.get("name") not in (None, "") and all(r.get(c) is not None for c in required)
-        ]
+        for row in data:
+            has_required = all(row.get(c) is not None for c in required)
+            has_name = row.get("name") not in (None, "")
+
+            if has_name and has_required:
+                clean.append(row)
+                continue
+
+            missing_predictors = [col for col in nutrient_cols if row.get(col) is None]
+            if missing_predictors:
+                feed_name = str(row.get("name") or "")
+                reason = f"missing_predictor_values:{';'.join(missing_predictors)}"
+                pre_screen_removed_feeds.append({"feed_name": feed_name, "reason": reason})
+                self._logger.info("Pre-screen removed feed '%s' (%s)", feed_name, reason)
+
         if not clean:
             raise ValueError(
                 "No usable rows after cleaning. Check numeric values for: " + ", ".join(required)
@@ -181,11 +197,18 @@ class SesameEstimator:
                 initial_fit=initial_fit,
                 final_fit=initial_fit,
                 excluded_feeds=[],
+                pre_screen_removed_feeds=pre_screen_removed_feeds,
                 diagnostic_rows=diagnostic_rows,
                 config=cfg,
             )
 
-        return self._run_iterative_screening(clean, nutrient_cols, cfg, include_intercept)
+        return self._run_iterative_screening(
+            clean,
+            nutrient_cols,
+            cfg,
+            include_intercept,
+            pre_screen_removed_feeds=pre_screen_removed_feeds,
+        )
 
     def _run_iterative_screening(
         self,
@@ -193,6 +216,7 @@ class SesameEstimator:
         nutrients: List[str],
         config: ScreeningConfig,
         include_intercept: bool,
+        pre_screen_removed_feeds: Optional[List[Dict[str, str]]] = None,
     ) -> ScreeningResult:
         """SESAME-style two-stage fit with explicit exclusion logging."""
         initial_fit = self.fit(rows, nutrients, include_intercept=include_intercept)
@@ -238,6 +262,7 @@ class SesameEstimator:
             initial_fit=initial_fit,
             final_fit=final_fit,
             excluded_feeds=exclusions,
+            pre_screen_removed_feeds=pre_screen_removed_feeds or [],
             diagnostic_rows=diagnostic_rows,
             config=config,
         )
