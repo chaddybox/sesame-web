@@ -29,6 +29,35 @@ from models.estimator import (
 )
 
 
+PRESETS = [
+    {
+        "label": "1) Basic Energy + Protein (DE, CP)",
+        "summary_label": "Basic Energy + Protein (DE, CP)",
+        "columns": ["DE", "CP"],
+    },
+    {
+        "label": "2) Energy + Metabolizable Protein (DE, MP)",
+        "summary_label": "Energy + Metabolizable Protein (DE, MP)",
+        "columns": ["DE", "MP"],
+    },
+    {
+        "label": "3) Energy + MP + Digestible Fiber (DE, MP, NDFd)",
+        "summary_label": "Energy + MP + Digestible Fiber (DE, MP, NDFd)",
+        "columns": ["DE", "MP", "NDFd"],
+    },
+    {
+        "label": "4) Energy + MP + Fiber + Fat (DE, MP, NDFd, Fat)",
+        "summary_label": "Energy + MP + Fiber + Fat (DE, MP, NDFd, Fat)",
+        "columns": ["DE", "MP", "NDFd", "Fat"],
+    },
+    {
+        "label": "5) NASEM Eq. 6-6 Milk Protein Yield",
+        "summary_label": "NASEM Eq. 6-6 Milk Protein Yield",
+        "columns": ["NASEM_MP_6_6_perkgDM", "DE", "NDFd"],
+    },
+]
+
+
 def _row_as_dict(r):
     if isinstance(r, dict):
         return r
@@ -63,36 +92,9 @@ class MainWindow(QMainWindow):
 
         self.preset_box = QComboBox()
 
-        # Revised preset nutrient systems
-        self._presets = [
-            (
-                "Basic Energy + Protein (DE, CP)",
-                ["DE", "CP"],
-            ),
-            (
-                "Energy + MP + Fiber (DE, MP, NDF)",
-                ["DE", "MP", "NDF"],
-            ),
-            (
-                "Energy + RDP + dRUP + Fiber (DE, RDP_prot, dRUP_prot, NDF)",
-                ["DE", "RDP_prot", "dRUP_prot", "NDF"],
-            ),
-            (
-                "Protein Value — Compact (dRUP_prot, dMetLysHis_RUP_sum)",
-                ["dRUP_prot", "dMetLysHis_RUP_sum"],
-            ),
-            (
-                "Protein Value — Detailed (dRUP_prot, dLys_RUP, dMet_RUP, dHis_RUP)",
-                ["dRUP_prot", "dLys_RUP", "dMet_RUP", "dHis_RUP"],
-            ),
-            (
-                "NASEM Eq. 6-6 Milk Protein Yield (NASEM_MP_6_6_perkgDM, DE, NDFd)",
-                ["NASEM_MP_6_6_perkgDM", "DE", "NDFd"],
-            ),
-        ]
-
-        for title, _cols in self._presets:
-            self.preset_box.addItem(title)
+        self._presets = PRESETS
+        for preset in self._presets:
+            self.preset_box.addItem(preset["label"])
 
         preset_row = QHBoxLayout()
         preset_label = QLabel("Preset:")
@@ -192,17 +194,6 @@ class MainWindow(QMainWindow):
             "Outputs are written to the /outputs folder.",
         )
 
-    def _warn_if_protein_only_preset(self, preset_index: int):
-        """Warn user that protein-only presets are not suitable for low-protein feeds."""
-        if preset_index in (3, 4):  # presets 4 and 5 in 0-based indexing
-            QMessageBox.information(
-                self,
-                "Protein-Only Preset Warning",
-                "This preset is intended for protein supplements and other moderate- to high-protein feeds.\n\n"
-                "Low-protein feeds should generally not be included in this analysis.\n\n"
-                "Use with caution on mixed feed libraries containing grains, forages, or other low-protein ingredients.",
-            )
-
     def on_run_clicked(self):
         csv_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -215,10 +206,9 @@ class MainWindow(QMainWindow):
         self._last_dir = str(Path(csv_path).parent)
 
         idx = self.preset_box.currentIndex()
-        preset_label, cols = self._presets[idx]
-
-        # Warning for protein-only presets
-        self._warn_if_protein_only_preset(idx)
+        preset = self._presets[idx]
+        preset_label = preset["summary_label"]
+        cols = preset["columns"]
 
         try:
             precheck = self._estimator.summarize_input_rows(csv_path, cols)
@@ -228,6 +218,7 @@ class MainWindow(QMainWindow):
             return
 
         precheck_msg = (
+            f"Preset requires: {', '.join(cols)}\n"
             f"{precheck['usable']} feeds usable for this preset.\n"
             f"{precheck['skipped_missing_required_inputs']} feeds will be skipped due to missing required inputs."
         )
@@ -296,8 +287,7 @@ class MainWindow(QMainWindow):
 
     def _write_outputs(self, input_csv: str, fit: FitResult):
         inp = Path(input_csv)
-        out_dir = self._project_root / "outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._ensure_output_dir()
 
         base = inp.stem
         summary_path = out_dir / f"{base}.summary.csv"
@@ -332,9 +322,7 @@ class MainWindow(QMainWindow):
         return str(summary_path), str(breakeven_path), str(shadow_path)
 
     def _write_diagnostic_outputs(self, input_csv: str, result: ScreeningResult):
-        inp = Path(input_csv)
-        out_dir = self._project_root / "outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._ensure_output_dir()
 
         initial_path = out_dir / "initial_fit.summary.csv"
         final_path = out_dir / "final_fit.summary.csv"
@@ -409,8 +397,7 @@ class MainWindow(QMainWindow):
         self._write_csv_rows(path, fieldnames, self._fit_rows_for_csv(fit))
 
     def _write_pre_screen_removed_feeds_output(self, result: ScreeningResult) -> str:
-        out_dir = self._project_root / "outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._ensure_output_dir()
         out_path = out_dir / "pre_screen_removed_feeds.csv"
 
         rows = [
@@ -426,13 +413,18 @@ class MainWindow(QMainWindow):
 
     def _build_run_summary(self, preset_label: str, result: ScreeningResult, output_dir: Path) -> str:
         return (
-            "Run summary:\n"
-            f"• Preset: {preset_label}\n"
+            f"Preset used: {preset_label}\n"
             f"• Feeds used in regression: {len(result.final_fit.rows)}\n"
-            f"• Removed before regression (missing required inputs): {len(result.pre_screen_removed_feeds)}\n"
+            f"• Feeds skipped due to missing inputs: {len(result.pre_screen_removed_feeds)}\n"
             f"• Excluded by diagnostic screening: {len(result.excluded_feeds)}\n"
-            f"• Output files: {output_dir}"
+            "\n"
+            f"Output files saved in: {output_dir}"
         )
+
+    def _ensure_output_dir(self) -> Path:
+        out_dir = self._project_root / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
 
     def _write_bar_chart(self, input_csv: str, fit: FitResult) -> str:
         try:
@@ -442,8 +434,7 @@ class MainWindow(QMainWindow):
             raise RuntimeError(f"Matplotlib import failed: {e}")
 
         inp = Path(input_csv)
-        out_dir = self._project_root / "outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._ensure_output_dir()
 
         names = [r.name for r in fit.rows]
         actual = np.array([r.actual_per_t for r in fit.rows], dtype=float)
@@ -493,8 +484,7 @@ class MainWindow(QMainWindow):
             raise RuntimeError(f"Matplotlib import failed: {e}")
 
         inp = Path(input_csv)
-        out_dir = self._project_root / "outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self._ensure_output_dir()
 
         names = [r.name for r in fit.rows]
         actual = np.array([r.actual_per_t for r in fit.rows], dtype=float)
