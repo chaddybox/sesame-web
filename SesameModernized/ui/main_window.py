@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 
-from models.estimator import (
+from ..models.estimator import (
     SesameEstimator,
     FitResult,
     ScreeningConfig,
