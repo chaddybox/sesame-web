@@ -1,0 +1,17 @@
+# Streamlit secrets — contains API keys, never commit
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Outputs (generated at runtime)
+outputs/
+
+# OS
+.DS_Store
+Thumbs.db
