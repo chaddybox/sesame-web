@@ -48,11 +48,8 @@ def get_supabase() -> Client:
 # ---------------------------------------------------------------------------
 def require_auth():
     params = st.query_params
-    if params.get("type") == "recovery":
-        _show_reset_password(
-            params.get("access_token", ""),
-            params.get("refresh_token", ""),
-        )
+    if params.get("type") == "recovery" and params.get("token_hash"):
+        _show_reset_password(params.get("token_hash", ""))
         st.stop()
     if "user" not in st.session_state:
         _show_login()
@@ -85,7 +82,7 @@ def _show_login():
                 st.error("Sign in failed. Check your email and password.")
 
 
-def _show_reset_password(access_token: str, refresh_token: str):
+def _show_reset_password(token_hash: str):
     st.set_page_config(page_title="Sesame — Reset Password", layout="centered")
     _, col, _ = st.columns([1, 2, 1])
     with col:
@@ -110,7 +107,7 @@ def _show_reset_password(access_token: str, refresh_token: str):
             else:
                 try:
                     sb = get_supabase()
-                    sb.auth.set_session(access_token, refresh_token)
+                    sb.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
                     sb.auth.update_user({"password": new_password})
                     st.success("Password updated! You can now sign in.")
                     st.query_params.clear()
