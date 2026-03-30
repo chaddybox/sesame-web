@@ -107,7 +107,9 @@ def _show_reset_password(token_hash: str):
             else:
                 try:
                     sb = get_supabase()
-                    sb.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                    response = sb.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                    session = response.session
+                    sb.auth.set_session(session.access_token, session.refresh_token)
                     sb.auth.update_user({"password": new_password})
                     st.success("Password updated! You can now sign in.")
                     st.query_params.clear()
