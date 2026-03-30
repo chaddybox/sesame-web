@@ -47,6 +47,13 @@ def get_supabase() -> Client:
 # Auth
 # ---------------------------------------------------------------------------
 def require_auth():
+    params = st.query_params
+    if params.get("type") == "recovery":
+        _show_reset_password(
+            params.get("access_token", ""),
+            params.get("refresh_token", ""),
+        )
+        st.stop()
     if "user" not in st.session_state:
         _show_login()
         st.stop()
@@ -76,6 +83,39 @@ def _show_login():
                 st.rerun()
             except Exception:
                 st.error("Sign in failed. Check your email and password.")
+
+
+def _show_reset_password(access_token: str, refresh_token: str):
+    st.set_page_config(page_title="Sesame — Reset Password", layout="centered")
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        st.markdown(
+            "<div style='text-align:center; font-size:96px; line-height:1.1; padding: 8px 0;'>🌱</div>",
+            unsafe_allow_html=True,
+        )
+        st.title("Reset Password")
+        st.caption("Enter a new password for your account.")
+        st.divider()
+        with st.form("reset_password"):
+            new_password = st.text_input("New Password", type="password")
+            confirm = st.text_input("Confirm New Password", type="password")
+            submitted = st.form_submit_button("Update Password", use_container_width=True)
+        if submitted:
+            if not new_password:
+                st.error("Please enter a new password.")
+            elif new_password != confirm:
+                st.error("Passwords do not match.")
+            elif len(new_password) < 8:
+                st.error("Password must be at least 8 characters.")
+            else:
+                try:
+                    sb = get_supabase()
+                    sb.auth.set_session(access_token, refresh_token)
+                    sb.auth.update_user({"password": new_password})
+                    st.success("Password updated! You can now sign in.")
+                    st.query_params.clear()
+                except Exception as e:
+                    st.error(f"Could not update password: {e}")
 
 
 def logout():

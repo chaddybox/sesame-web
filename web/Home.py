@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import streamlit as st
+import streamlit.components.v1 as components
 from utils import require_auth, show_sidebar_user
 
 st.set_page_config(
@@ -15,6 +16,28 @@ st.set_page_config(
     page_icon="🌱",
     layout="wide",
 )
+
+# Supabase puts recovery tokens in the URL hash (#access_token=...&type=recovery).
+# Streamlit can't read hash fragments server-side, so this script detects the hash
+# and redirects with query params that Streamlit can read.
+components.html("""
+<script>
+(function () {
+    var hash = window.parent.location.hash.substring(1);
+    if (!hash) return;
+    var params = new URLSearchParams(hash);
+    if (params.get('type') === 'recovery') {
+        var at = params.get('access_token') || '';
+        var rt = params.get('refresh_token') || '';
+        window.parent.location.replace(
+            window.parent.location.pathname +
+            '?type=recovery&access_token=' + encodeURIComponent(at) +
+            '&refresh_token=' + encodeURIComponent(rt)
+        );
+    }
+})();
+</script>
+""", height=0)
 
 user = require_auth()
 show_sidebar_user()
