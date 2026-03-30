@@ -31,37 +31,7 @@ from SesameModernized.models.estimator import (
     ScreeningResult,
     SesameEstimator,
 )
-
-# ---------------------------------------------------------------------------
-# Presets
-# ---------------------------------------------------------------------------
-PRESETS = [
-    {
-        "label": "1) Basic Energy + Protein (DE, CP)",
-        "summary_label": "Basic Energy + Protein (DE, CP)",
-        "columns": ["DE", "CP"],
-    },
-    {
-        "label": "2) Energy + Metabolizable Protein (DE, MP)",
-        "summary_label": "Energy + Metabolizable Protein (DE, MP)",
-        "columns": ["DE", "MP"],
-    },
-    {
-        "label": "3) Energy + MP + Digestible Fiber (DE, MP, NDFd)",
-        "summary_label": "Energy + MP + Digestible Fiber (DE, MP, NDFd)",
-        "columns": ["DE", "MP", "NDFd"],
-    },
-    {
-        "label": "4) Energy + MP + Fiber + Fat (DE, MP, NDFd, Fat)",
-        "summary_label": "Energy + MP + Fiber + Fat (DE, MP, NDFd, Fat)",
-        "columns": ["DE", "MP", "NDFd", "Fat"],
-    },
-    {
-        "label": "5) NASEM Eq. 6-6 Milk Protein Yield",
-        "summary_label": "NASEM Eq. 6-6 Milk Protein Yield",
-        "columns": ["NASEM_MP_6_6_perkgDM", "DE", "NDFd"],
-    },
-]
+from SesameModernized.models.nutrient_catalog import PRESETS
 
 # ---------------------------------------------------------------------------
 # Supabase client

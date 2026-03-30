@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from PySide6.QtWidgets import QApplication
+
 from PySide6.QtGui import QIcon
-from .ui.main_window import MainWindow
+from PySide6.QtWidgets import QApplication
+
+from SesameModernized.ui.main_window import MainWindow
+
 
 def pick_icon_path() -> str | None:
     root = Path(__file__).resolve().parent
@@ -20,6 +23,7 @@ def pick_icon_path() -> str | None:
             return str(p)
     return None
 
+
 def main():
     app = QApplication(sys.argv)
 
@@ -30,6 +34,7 @@ def main():
     window = MainWindow(app_icon_path=icon_path)
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

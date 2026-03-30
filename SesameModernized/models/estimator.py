@@ -13,14 +13,11 @@ from .derived import add_derived
 from .nutrients import canon_header
 
 
-# ---------- robust value parsing ----------
-
 NA_STRINGS = {"", "na", "n/a", "nan", "null", "-", "—", "--", "n.a.", "none"}
 
 
 def to_float_safe(x):
-    """Parse messy spreadsheet cells into float or None.
-    Handles: empty strings, 'N/A', commas, percents like '12%', spaces."""
+    """Parse messy spreadsheet cells into float or None."""
     if x is None:
         return None
     s = str(x).strip()
@@ -39,9 +36,6 @@ def to_float_safe(x):
         return None
 
 
-# ---------- result containers ----------
-
-
 @dataclass
 class ResultRow:
     name: str
@@ -52,6 +46,8 @@ class ResultRow:
     student_residual: float
     ci75_lo: float
     ci75_hi: float
+    final_weight: float = 1.0
+    abs_student_residual: float = 0.0
 
 
 @dataclass
@@ -68,17 +64,13 @@ class FitResult:
     intercept_tvalue: Optional[float]
     intercept_pvalue: Optional[float]
     rows: List[ResultRow]
+    iteration_count: int = 1
+    max_iter_reached: bool = False
 
 
 @dataclass
 class ScreeningConfig:
-    """User-editable thresholds for SESAME-style diagnostics.
-
-    Defaults follow common SESAME diagnostic heuristics and can be adjusted
-    without changing the core fitting algorithm.
-    """
-
-    enable_iterative_screening: bool = False
+    enable_iterative_screening: bool = True
     exclude_extreme_studentized: bool = False
     auto_remove_nonsignificant_intercept: bool = False
     intercept_alpha: float = 0.05
@@ -87,6 +79,7 @@ class ScreeningConfig:
     leverage_very_high_multiplier: float = 3.0
     vif_concerning_threshold: float = 10.0
     vif_unacceptable_threshold: float = 20.0
+    max_iter: int = 10
 
 
 @dataclass
@@ -105,18 +98,14 @@ class ScreeningResult:
     pre_screen_removed_feeds: List[Dict[str, str]]
     diagnostic_rows: List[Dict[str, object]]
     config: ScreeningConfig
-
-
-# ---------- estimator ----------
+    iteration_log: Optional[List[Dict[str, object]]] = None
 
 
 class SesameEstimator:
-    """Multiple linear regression Price = b0 + sum_j b_j * Nutrient_j.
-    This implementation matches the data produced/consumed by the UI."""
+    """Multiple linear regression Price = b0 + sum_j b_j * Nutrient_j."""
 
     _logger = logging.getLogger(__name__)
 
-    # ------------- public API -------------
     def run_on_csv(
         self,
         path: str,
@@ -127,6 +116,8 @@ class SesameEstimator:
         """
         Load a CSV, normalize headers, coerce numbers safely, add derived values,
         then fit the model with chosen nutrients.
+
+        Sesame 4 behavior is iterative reweighted least squares by default.
         """
         p = Path(path)
         if not p.exists():
@@ -142,18 +133,6 @@ class SesameEstimator:
             )
 
         cfg = screening or ScreeningConfig()
-        initial_fit = self.fit(clean, nutrient_cols, include_intercept=include_intercept)
-
-        if not cfg.enable_iterative_screening:
-            diagnostic_rows = self._build_diagnostic_rows(initial_fit, cfg)
-            return ScreeningResult(
-                initial_fit=initial_fit,
-                final_fit=initial_fit,
-                excluded_feeds=[],
-                pre_screen_removed_feeds=pre_screen_removed_feeds,
-                diagnostic_rows=diagnostic_rows,
-                config=cfg,
-            )
 
         return self._run_iterative_screening(
             clean,
@@ -164,7 +143,6 @@ class SesameEstimator:
         )
 
     def summarize_input_rows(self, path: str, nutrient_cols: List[str]) -> Dict[str, int]:
-        """Return simple pre-run usability counts for the chosen preset nutrients."""
         data = self._load_input_rows(path)
         clean, removed = self._split_usable_rows(data, nutrient_cols)
         return {
@@ -210,6 +188,7 @@ class SesameEstimator:
         clean: List[Dict[str, float]] = []
         pre_screen_removed_feeds: List[Dict[str, str]] = []
         required = ["price_per_t"] + list(nutrient_cols)
+
         for row in rows:
             has_required = all(row.get(c) is not None for c in required)
             has_name = row.get("name") not in (None, "")
@@ -235,72 +214,79 @@ class SesameEstimator:
         include_intercept: bool,
         pre_screen_removed_feeds: Optional[List[Dict[str, str]]] = None,
     ) -> ScreeningResult:
-        """SESAME-style two-stage fit with explicit exclusion logging."""
-        initial_fit = self.fit(rows, nutrients, include_intercept=include_intercept)
-        diagnostic_rows = self._build_diagnostic_rows(initial_fit, config)
+        """
+        Sesame 4 style iterative reweighting using studentized residuals.
+        All feeds stay in the model and are progressively downweighted.
+        """
+        if not config.enable_iterative_screening:
+            single_fit = self.fit(
+                rows,
+                nutrients,
+                include_intercept=include_intercept,
+                row_weights=np.ones(len(rows), dtype=float),
+                iteration_count=1,
+                max_iter_reached=False,
+            )
+            iteration_log = self._fit_rows_to_iteration_log(1, single_fit)
+            return ScreeningResult(
+                initial_fit=single_fit,
+                final_fit=single_fit,
+                excluded_feeds=[],
+                pre_screen_removed_feeds=pre_screen_removed_feeds or [],
+                diagnostic_rows=self._build_diagnostic_rows(single_fit, config),
+                config=config,
+                iteration_log=iteration_log,
+            )
 
-        exclusions: List[ExclusionRecord] = []
-        keep_names = {r["name"] for r in diagnostic_rows}
-
-        for d in diagnostic_rows:
-            reasons: List[str] = []
-            if d["is_very_high_leverage"]:
-                reasons.append("very_high_leverage")
-            if config.exclude_extreme_studentized and d["is_extreme_studentized"]:
-                reasons.append("extreme_studentized_residual")
-            if reasons:
-                keep_names.discard(d["name"])
-                exclusions.append(
-                    ExclusionRecord(
-                        name=str(d["name"]),
-                        reason=";".join(reasons),
-                        leverage=float(d["leverage"]),
-                        student_residual=float(d["student_residual"]),
-                    )
-                )
-
-        refined_rows = [r for r in rows if str(r.get("name", "")) in keep_names]
-        if not refined_rows:
-            raise ValueError("Iterative screening removed all feeds; adjust thresholds.")
-
-        final_include_intercept = include_intercept
-        final_fit = self.fit(refined_rows, nutrients, include_intercept=final_include_intercept)
+        initial_fit, final_fit, iteration_log = self._run_iterative_reweighting(
+            rows,
+            nutrients,
+            include_intercept=include_intercept,
+            max_iter=config.max_iter,
+        )
 
         if (
             config.auto_remove_nonsignificant_intercept
-            and final_include_intercept
+            and include_intercept
             and final_fit.intercept_pvalue is not None
             and final_fit.intercept_pvalue > config.intercept_alpha
         ):
-            final_include_intercept = False
-            final_fit = self.fit(refined_rows, nutrients, include_intercept=False)
+            initial_fit, final_fit, iteration_log = self._run_iterative_reweighting(
+                rows,
+                nutrients,
+                include_intercept=False,
+                max_iter=config.max_iter,
+            )
 
         return ScreeningResult(
             initial_fit=initial_fit,
             final_fit=final_fit,
-            excluded_feeds=exclusions,
+            excluded_feeds=[],
             pre_screen_removed_feeds=pre_screen_removed_feeds or [],
-            diagnostic_rows=diagnostic_rows,
+            diagnostic_rows=self._build_diagnostic_rows(final_fit, config),
             config=config,
+            iteration_log=iteration_log,
         )
 
     def _build_diagnostic_rows(self, fit: FitResult, cfg: ScreeningConfig) -> List[Dict[str, object]]:
         n = max(len(fit.rows), 1)
         p = len(fit.nutrients)
-        # SESAME-style leverage cutoffs scale with model dimension and n.
         high_lev = cfg.leverage_high_multiplier * (p + 1) / n
         very_high_lev = cfg.leverage_very_high_multiplier * (p + 1) / n
 
         out: List[Dict[str, object]] = []
         for r in fit.rows:
-            abs_student = abs(float(r.student_residual))
+            abs_student = float(getattr(r, "abs_student_residual", abs(float(r.student_residual))))
             lev = float(r.leverage)
+            final_weight = float(getattr(r, "final_weight", 1.0))
             out.append(
                 {
                     "name": r.name,
                     "leverage": lev,
                     "student_residual": float(r.student_residual),
                     "abs_student_residual": abs_student,
+                    "final_weight": final_weight,
+                    "weight": final_weight,
                     "is_high_leverage": lev > high_lev,
                     "is_very_high_leverage": lev > very_high_lev,
                     "is_extreme_studentized": abs_student > cfg.studentized_abs_threshold,
@@ -308,54 +294,132 @@ class SesameEstimator:
             )
         return out
 
-    # ------------- core fit -------------
     def fit(
         self,
         rows: List[Dict[str, float]],
         nutrients: List[str],
         include_intercept: bool = True,
+        row_weights: Optional[np.ndarray] = None,
+        iteration_count: int = 1,
+        max_iter_reached: bool = False,
     ) -> FitResult:
         n = len(rows)
         k = len(nutrients) + (1 if include_intercept else 0)
         if n <= k:
             raise ValueError(f"Not enough rows ({n}) for {k} parameters.")
 
-        y = np.array([rows[i]["price_per_t"] for i in range(n)], dtype=float)
-        X_cols: List[np.ndarray] = []
-        if include_intercept:
-            X_cols.append(np.ones(n))
-        for name in nutrients:
-            X_cols.append(np.array([rows[i][name] for i in range(n)], dtype=float))
-        X = np.column_stack(X_cols)
+        y, X = self._build_design_matrix(rows, nutrients, include_intercept=include_intercept)
+        weights = self._normalize_row_weights(n, row_weights)
 
-        XtX = X.T @ X
-        try:
-            XtX_inv = np.linalg.inv(XtX)
-        except np.linalg.LinAlgError:
-            XtX_inv = np.linalg.pinv(XtX)
-        beta = XtX_inv @ (X.T @ y)
+        return self._fit_weighted_system(
+            rows,
+            nutrients,
+            X,
+            y,
+            include_intercept=include_intercept,
+            row_weights=weights,
+            iteration_count=iteration_count,
+            max_iter_reached=max_iter_reached,
+        )
+
+    def _run_iterative_reweighting(
+        self,
+        rows: List[Dict[str, float]],
+        nutrients: List[str],
+        include_intercept: bool,
+        max_iter: int = 10,
+    ) -> tuple[FitResult, FitResult, List[Dict[str, object]]]:
+        n = len(rows)
+        weights = np.ones(n, dtype=float)
+        iteration_log: List[Dict[str, object]] = []
+
+        initial_fit = self.fit(
+            rows,
+            nutrients,
+            include_intercept=include_intercept,
+            row_weights=weights,
+            iteration_count=1,
+            max_iter_reached=False,
+        )
+        iteration_log.extend(self._fit_rows_to_iteration_log(1, initial_fit))
+        current_fit = initial_fit
+
+        for iteration in range(2, max_iter + 1):
+            new_weights = self._update_weights_from_studentized(current_fit.rows, weights)
+            weights_changed = not np.allclose(new_weights, weights, atol=1e-12, rtol=0.0)
+
+            weights = new_weights
+            current_fit = self.fit(
+                rows,
+                nutrients,
+                include_intercept=include_intercept,
+                row_weights=weights,
+                iteration_count=iteration,
+                max_iter_reached=False,
+            )
+            iteration_log.extend(self._fit_rows_to_iteration_log(iteration, current_fit))
+
+            if not weights_changed:
+                current_fit.max_iter_reached = False
+                break
+        else:
+            current_fit.max_iter_reached = True
+
+        return initial_fit, current_fit, iteration_log
+
+    def _fit_weighted_system(
+        self,
+        rows: List[Dict[str, float]],
+        nutrients: List[str],
+        X: np.ndarray,
+        y: np.ndarray,
+        include_intercept: bool,
+        row_weights: np.ndarray,
+        iteration_count: int,
+        max_iter_reached: bool,
+    ) -> FitResult:
+        n = len(rows)
+        k = X.shape[1]
+
+        sqrt_w = np.sqrt(row_weights)
+        Xw = X * sqrt_w[:, None]
+        yw = y * sqrt_w
+
+        XtWX = Xw.T @ Xw
+        XtWX_inv = np.linalg.pinv(XtWX)
+
+        beta = XtWX_inv @ (Xw.T @ yw)
 
         yhat = X @ beta
         resid = y - yhat
-        dof = n - k
-        sigma2 = float((resid @ resid) / dof)
+        dof = max(n - k, 1)
 
-        var_beta = sigma2 * XtX_inv
-        se = np.sqrt(np.diag(var_beta))
+        weighted_sse = float((row_weights * (resid ** 2)).sum())
+        sigma2 = float(weighted_sse / dof)
 
-        ss_tot = float(((y - y.mean()) ** 2).sum())
-        ss_res = float((resid ** 2).sum())
+        var_beta = sigma2 * XtWX_inv
+        se = np.sqrt(np.maximum(np.diag(var_beta), 0.0))
+
+        weighted_mean = float(np.average(y, weights=row_weights))
+        ss_tot = float((row_weights * ((y - weighted_mean) ** 2)).sum())
+        ss_res = weighted_sse
         r2 = 1.0 - (ss_res / ss_tot if ss_tot > 0 else 0.0)
-        adj_r2 = 1.0 - (1.0 - r2) * (n - 1) / (n - k)
+        adj_r2 = 1.0 - (1.0 - r2) * (n - 1) / max(n - k, 1)
 
-        H_diag = np.sum(X * (X @ XtX_inv), axis=1)
+        # Hat diagonal from whitened WLS system
+        H_diag = np.sum((Xw @ XtWX_inv) * Xw, axis=1)
+        H_diag = np.clip(H_diag, 0.0, 0.999999)
 
-        with np.errstate(invalid="ignore"):
-            s_i = np.sqrt(np.maximum(1.0 - H_diag, 1e-12))
-            stud = resid / (np.sqrt(sigma2) * s_i)
+        # Internally studentized residuals for WLS
+        with np.errstate(invalid="ignore", divide="ignore"):
+            denom = np.sqrt(np.maximum(sigma2, 1e-12)) * np.sqrt(np.maximum(1.0 - H_diag, 1e-12))
+            stud = (sqrt_w * resid) / denom
 
         z75 = 1.15
-        pred_se = np.sqrt(np.sum(X * (X @ XtX_inv), axis=1) * sigma2)
+
+        # Approximate x'(X'WX)^-1x on original scale
+        x_var = H_diag / np.maximum(row_weights, 1e-12)
+        pred_se = np.sqrt(np.maximum(x_var, 0.0) * max(sigma2, 0.0))
         ci_lo = yhat - z75 * pred_se
         ci_hi = yhat + z75 * pred_se
 
@@ -371,6 +435,8 @@ class SesameEstimator:
                     student_residual=float(stud[i]),
                     ci75_lo=float(ci_lo[i]),
                     ci75_hi=float(ci_hi[i]),
+                    final_weight=float(row_weights[i]),
+                    abs_student_residual=float(abs(stud[i])),
                 )
             )
 
@@ -420,9 +486,73 @@ class SesameEstimator:
             intercept_coef=intercept_coef,
             intercept_se=intercept_se,
             intercept_tvalue=intercept_t,
-            intercept_pvalue=intercept_p,
+            intercept_pvalue=intercept_pvalue if False else intercept_p,
             rows=out_rows,
+            iteration_count=iteration_count,
+            max_iter_reached=max_iter_reached,
         )
+
+    def _build_design_matrix(
+        self,
+        rows: List[Dict[str, float]],
+        nutrients: List[str],
+        include_intercept: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        n = len(rows)
+        y = np.array([rows[i]["price_per_t"] for i in range(n)], dtype=float)
+        X_cols: List[np.ndarray] = []
+        if include_intercept:
+            X_cols.append(np.ones(n))
+        for name in nutrients:
+            X_cols.append(np.array([rows[i][name] for i in range(n)], dtype=float))
+        X = np.column_stack(X_cols)
+        return y, X
+
+    @staticmethod
+    def _normalize_row_weights(n: int, row_weights: Optional[np.ndarray]) -> np.ndarray:
+        if row_weights is None:
+            return np.ones(n, dtype=float)
+        weights = np.array(row_weights, dtype=float).reshape(-1)
+        if len(weights) != n:
+            raise ValueError(f"Expected {n} row weights, received {len(weights)}.")
+        return np.clip(weights, 1e-12, None)
+
+    @staticmethod
+    def _update_weights_from_studentized(rows: List[ResultRow], old_weights: np.ndarray) -> np.ndarray:
+        """
+        Sesame 4 reweighting rules.
+        Weights can be reduced repeatedly:
+        1.0 -> 0.5 -> 0.25 -> 0.025, etc.
+        """
+        new_weights = old_weights.copy()
+        for i, row in enumerate(rows):
+            abs_student = abs(float(row.student_residual))
+            multiplier = 1.0
+
+            if 1.5 <= abs_student < 2.0:
+                multiplier = 0.5
+            elif 2.0 < abs_student < 2.5:
+                multiplier = 0.25
+            elif abs_student > 2.5:
+                multiplier = 0.1
+
+            new_weights[i] = old_weights[i] * multiplier
+
+        return new_weights
+
+    @staticmethod
+    def _fit_rows_to_iteration_log(iteration: int, fit: FitResult) -> List[Dict[str, object]]:
+        return [
+            {
+                "iteration": iteration,
+                "feed_name": row.name,
+                "weight": float(getattr(row, "final_weight", 1.0)),
+                "residual": float(row.residual),
+                "student_residual": float(row.student_residual),
+                "abs_student_residual": float(getattr(row, "abs_student_residual", abs(row.student_residual))),
+            }
+            for row in fit.rows
+        ]
 
     @staticmethod
     def _normal_cdf(x: float) -> float:

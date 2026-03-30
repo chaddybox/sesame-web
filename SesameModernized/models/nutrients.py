@@ -45,6 +45,9 @@ ALIASES: Dict[str, str] = {
     "me": "ME",
     "nel": "NEL",
 
+    # digestible RUP
+    "drup": "dRUP",
+
     # fiber digestibility
     "ndfd48": "NDFD48",
     "ndfd": "NDFD48",
@@ -55,11 +58,30 @@ ALIASES: Dict[str, str] = {
     "sugar": "WSC",
 
     # fats / fatty acids
+    "fat": "Fat",
+    "crudefat": "Fat",
     "totalfattyacids": "Total_Fatty_Acids",
     "totalfattyacidsdm": "Total_Fatty_Acids",
     "tfadm": "TFA_DM",
+    "c120tfa": "C12_0",
+    "c140tfa": "C14_0",
+    "c160tfa": "C16_0",
+    "c161tfa": "C16_1",
+    "c180tfa": "C18_0",
     "c181cistfa": "C18_1_cis",
     "c181transtfa": "C18_1_trans",
+    "c182tfa": "C18_2",
+    "c183tfa": "C18_3",
+    "otherfattyacidstfa": "Other_Fatty_Acids",
+
+    # minerals
+    "ca": "Ca",
+    "p": "P",
+    "mg": "Mg",
+    "k": "K",
+    "na": "Na",
+    "cl": "Cl",
+    "s": "S",
 
     # amino acids (% of CP)
     "argc p": "Arg_%CP",

@@ -3,6 +3,18 @@ from typing import Dict, Any
 
 # Essential AA list used for sums
 EAA_KEYS = ["Arg", "His", "Ile", "Leu", "Lys", "Met", "Phe", "Thr", "Trp", "Val"]
+FATTY_ACID_KEYS = [
+    "C12_0",
+    "C14_0",
+    "C16_0",
+    "C16_1",
+    "C18_0",
+    "C18_1_trans",
+    "C18_1_cis",
+    "C18_2",
+    "C18_3",
+    "Other_Fatty_Acids",
+]
 
 
 def _pct(x):
@@ -115,12 +127,21 @@ def add_feed_level_proxies(rec: Dict[str, Any]) -> Dict[str, Any]:
         if ndfd_f is not None:
             rec["NDFd"] = ndf * ndfd_f
 
+    if rec.get("Total_Fatty_Acids") is None and rec.get("TFA_DM") is not None:
+        rec["Total_Fatty_Acids"] = rec["TFA_DM"]
+    if rec.get("TFA_DM") is None and rec.get("Total_Fatty_Acids") is not None:
+        rec["TFA_DM"] = rec["Total_Fatty_Acids"]
+
     tfa_dm = rec.get("TFA_DM")
-    c181cis = rec.get("C18_1_cis")
-    if tfa_dm is not None and c181cis is not None:
-        c181_f = _pct(c181cis)
-        if c181_f is not None:
-            rec["Oleic_DM"] = tfa_dm * c181_f
+    if tfa_dm is not None:
+        for key in FATTY_ACID_KEYS:
+            fa_pct = rec.get(key)
+            fa_fraction = _pct(fa_pct)
+            if fa_fraction is not None:
+                rec[f"{key}_DM"] = tfa_dm * fa_fraction
+
+    if rec.get("Oleic_DM") is None and rec.get("C18_1_cis_DM") is not None:
+        rec["Oleic_DM"] = rec["C18_1_cis_DM"]
 
     if rec.get("dRUP_prot") is not None and rec.get("Oleic_DM") is not None:
         rec["dRUP_plus_Oleic"] = rec["dRUP_prot"] + rec["Oleic_DM"]
