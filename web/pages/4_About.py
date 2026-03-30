@@ -59,17 +59,21 @@ st.markdown("""
 Presets define which nutrients are included in the regression model.
 Choose a preset that matches the nutrients you have reliable data for:
 
-| Preset | Nutrients |
-|---|---|
-| Basic Energy + Protein | DE, CP |
-| Energy + Metabolizable Protein | DE, MP |
-| Energy + MP + Digestible Fiber | DE, MP, NDFd |
-| Energy + MP + Fiber + Fat | DE, MP, NDFd, Fat |
-| NASEM Eq. 6-6 Milk Protein Yield | NASEM MP (6-6), DE, NDFd |
+| # | Preset | Nutrients |
+|---|---|---|
+| 1 | Basic Energy + Protein | DE, CP |
+| 2 | Energy + Digestible RUP Protein | DE, dRUP_prot |
+| 3 | Energy + Digestible RUP Protein + Digestible NDF | DE, dRUP_prot, NDFd |
+| 4 | Energy + Digestible RUP Protein + Digestible NDF + Fat | DE, dRUP_prot, NDFd, TFA |
+| 5 | NASEM Eq. 6-6 Milk Protein Yield *(locked)* | NASEM MP composite |
+| 6 | Branched-Chain Amino Acids (dRUP) | Leu, Ile, Val |
+| 7 | Lys, Met, His (dRUP) | Lys, Met, His |
+| 8 | Fat (TFA, % DM) | Total Fatty Acids |
 
-The **iterative diagnostic screening** option will automatically identify and remove
-outlier feeds (based on leverage and studentized residuals) and refit the model,
-producing a cleaner and more robust estimate.
+The **iterative diagnostic screening** option uses Sesame 4-style iterative reweighting.
+Rather than removing outlier feeds entirely, unusual feeds are progressively downweighted
+based on their studentized residuals — keeping all data in the model while reducing the
+influence of feeds that don't fit the overall trend.
 """)
 
 st.divider()
